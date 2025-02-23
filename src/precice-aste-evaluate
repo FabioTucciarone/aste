@@ -6,6 +6,8 @@ import os.path
 
 import numpy as np
 import vtk
+import re
+import csv
 from vtk.util.numpy_support import numpy_to_vtk as n2v
 from vtk.util.numpy_support import vtk_to_numpy as v2n
 
@@ -124,7 +126,26 @@ class Calculator:
             action="store_true",
             help="Store stats of the difference calculation as the separate file inputmesh.stats.json",
         )
+        parser.add_argument(
+            "--time_steps",
+            "-it",
+            type=int,
+            default=-1,
+            dest="time_steps",
+            help="Number of time steps to be evaluated and stored.",
+        )
+        parser.add_argument(
+            "--time_step_size",
+            "-dt",
+            type=float,
+            default=0.01,
+            dest="time_step_size",
+            help="Time step size",
+        )
         args, _ = parser.parse_known_args()
+        
+        print(args)
+        
         return args
 
     @staticmethod
@@ -150,9 +171,21 @@ class Calculator:
             "+0.75*exp(-((9*x+1)^2/49+(9*y+1)/10+(9*z+1)/10))"
             "+0.5*exp(-((9*x-7)^2+(9*y-3)^2+(9*z-5)^2)/4)"
             "-0.2*exp(-((9*x-4)^2+(9*y-7)^2+(9*z-5)^2))",
-            "eggholder3d": "-x*sin(sqrt(abs(x-y-47)))-(y+47)*sin(sqrt(abs(0.5*x+y+47)))"
-            "-y*sin(sqrt(abs(y-z-47)))-(z+47)*sin(sqrt(abs(0.5*y+z+47)))",
+            
+            "eggholder3d": 
+                "-x*sin(sqrt(abs(x-y-47)))"
+                "-(y+47)*sin(sqrt(abs(0.5*x+y+47)))"
+                "-y*sin(sqrt(abs(y-z-47)))"
+                "-(z+47)*sin(sqrt(abs(0.5*y+z+47)))",
+            
+            "scaled-eggholder3d": 
+                "-400*(x-0.5)*sin(sqrt(abs(400*(x-0.5)-400*(y-0.5)-47)))"
+                "-(400*(y-0.5)+47)*sin(sqrt(abs(0.5*400*(x-0.5)+400*(y-0.5)+47)))"
+                "-400*(y-0.5)*sin(sqrt(abs(400*(y-0.5)-400*(z-0.5)-47)))"
+                "-(400*(z-0.5)+47)*sin(sqrt(abs(0.5*400*(y-0.5)+400*(z-0.5)+47)))",
+            
             "rosenbrock3d": "(100*(y-x^2)^2+(x-1)^2)+(100*(z-y^2)^2+(y-1)^2)",
+            "moving-cos": "0.78 + cos(10*(x+y+z-{t}))"
         }
 
         pre_def_functions.update(pre_def2d_functions)
@@ -187,9 +220,9 @@ class Calculator:
         if args.listfunctions:
             Calculator.print_predef_functions(pre_def_functions)
             return
-        assert os.path.isfile(
-            args.in_meshname
-        ), 'Input mesh file not found. Please check your input mesh "--mesh".'
+        # assert os.path.isfile( # TODO
+        #     args.in_meshname
+        # ), 'Input mesh file not found. Please check your input mesh "--mesh".'
         assert (
             args.data
         ), 'Dataname "--data" is missing. Please give an dataname for given input.'
@@ -207,13 +240,39 @@ class Calculator:
             inputfunc = args.function
 
         calc = Calculator.create_vtk_calculator()
+        
         if args.diff:
             assert args.diffdata, """The \"--diffdata\" argument is required when running in difference mode (using the \"--diff\" argument).
             Please add a valid \"--diffdata\" argument or type \"--help\" for more information."""
 
-            Calculator.calculate_difference(calc, inputfunc, args, out_meshname)
+            if args.time_steps > 0: 
+                Calculator.calculate_difference_series(calc, inputfunc, args, out_meshname)
+            else: # TODO: Keine Zeitfunktion erlaubt
+                Calculator.calculate_difference(calc, inputfunc.format(t="0"), args, out_meshname)
         else:
-            Calculator.calculate_function(calc, inputfunc, args, out_meshname)
+            if args.time_steps > 0:
+                for i in range(0, args.time_steps + 1):
+                    extension = f".dt{i+1}" # init wird  nicht verwendet
+                    out_meshname_dt = os.path.splitext(out_meshname)[0] + extension + os.path.splitext(out_meshname)[1]
+                    
+                    Calculator.calculate_function(calc, inputfunc.format(t=f"({str(i * args.time_step_size)})"), args, out_meshname_dt)
+                
+                out_meshname = os.path.basename(os.path.normpath(out_meshname))
+                out_series_name = os.path.join(args.directory, out_meshname + ".series")
+                with open(out_series_name, "x") as seriesfile:
+                    time = 0.0
+                    seriesfile.write('{ "file-series-version" : "1.0", "files" : [ ')
+                    for i in range(0, args.time_steps + 1):
+                        extension = f".dt{i}" if i > 0 else ".init"
+                        out_meshname_dt = os.path.splitext(out_meshname)[0] + extension + os.path.splitext(out_meshname)[1]
+                        out_meshname_dt = os.path.basename(os.path.normpath(out_meshname_dt))
+                        out_meshname_dt = os.path.join(args.directory, out_meshname_dt)
+                        
+                        seriesfile.write('{ "name" : "' + out_meshname_dt + '", "time" : ' + str(time) + ' }, ')
+                        time += args.time_step_size
+                    seriesfile.write(' ] }')
+            else: # TODO: Keine Zeitfunktion erlaubt
+                Calculator.calculate_function(calc, inputfunc.format(t="0"), args, out_meshname)
 
     @staticmethod
     def create_vtk_calculator():
@@ -245,6 +304,71 @@ class Calculator:
 
         Calculator.write_mesh(vtk_dataset, out_meshname, args.directory)
 
+
+    @staticmethod
+    def calculate_difference_series(calc, inputfunc, args, out_meshname):
+        logger = Calculator.get_logger()
+        
+        stats_collection = [["step", "abs_max", "median(abs)", "relative-l2"]]
+        time = 0.0 
+
+        for i in range(1, args.time_steps + 1):
+            extension = f".dt{i}" if i > 0 else ".init"
+            in_meshname_dt = os.path.splitext(args.in_meshname)[0] + extension + os.path.splitext(args.in_meshname)[1] 
+            out_meshname_dt = os.path.splitext(out_meshname)[0] + extension + os.path.splitext(out_meshname)[1]
+            inputfunc_dt = inputfunc.format(t=f"({str((i) * args.time_step_size)})") # TODO: Unschön
+            
+            vtk_dataset = Calculator.read_mesh(in_meshname_dt)
+            calc.SetInputData(vtk_dataset)
+            diffdata = args.diffdata
+            if not vtk_dataset.GetPointData().HasArray(diffdata):
+                raise MissingDataError(
+                    f'Given mesh "{in_meshname_dt}" has no data with given name "{diffdata}"'
+                )
+            else:
+                data = v2n(vtk_dataset.GetPointData().GetAbstractArray(diffdata))
+                # Calculate given function on the mesh
+            calc.SetFunction(inputfunc_dt)
+            calc.SetResultArrayName("function")
+            calc.Update()
+            func = v2n(calc.GetOutput().GetPointData().GetAbstractArray("function"))
+            difference = data - func
+            logger.info(
+                f'Evaluated "{diffdata}"-"({inputfunc_dt})" on the mesh "{in_meshname_dt}".'
+            )
+
+            abs_diff = np.absolute(difference)
+            num_points = vtk_dataset.GetNumberOfPoints()
+            cnt, abs_min, signed_min, abs_max, signed_max = (
+                num_points,
+                np.nanmin(abs_diff),
+                np.nanmin(difference),
+                np.nanmax(abs_diff),
+                np.nanmax(difference),
+            )
+            p99, p95, p90, median = np.percentile(abs_diff, [99, 95, 90, 50])
+            relative = np.sqrt(np.nansum(np.square(abs_diff)) / abs_diff.size)
+            
+            stats_collection.append([i, abs_max, median, relative])
+
+            diff_vtk = n2v(difference)
+            diff_vtk.SetName(args.data)
+            vtk_dataset.GetPointData().AddArray(diff_vtk)
+            Calculator.write_mesh(vtk_dataset, out_meshname_dt, args.directory)
+            
+            time += args.time_step_size
+        
+        decorator = 15 * "*"
+        spaces = 5 * " "
+        logger.info(f"\n\n{decorator}{spaces}Statistics{spaces}{decorator}\n\n")
+        logger.info('\n'.join(', '.join(map(str,sl)) for sl in stats_collection))
+        
+        if args.stats:
+            with open(os.path.splitext(out_meshname)[0] + ".stats.csv", 'x', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerows(stats_collection)
+     
+        
     @staticmethod
     def calculate_difference(calc, inputfunc, args, out_meshname):
         logger = Calculator.get_logger()
@@ -287,8 +411,7 @@ class Calculator:
             np.nanmax(abs_diff),
             np.nanmax(difference),
         )
-        p99, p95, p90 = np.percentile(abs_diff, [99, 95, 90])
-        median = np.median(abs_diff)
+        p99, p95, p90, median = np.percentile(abs_diff, [99, 95, 90, 50])
         relative = np.sqrt(np.nansum(np.square(abs_diff)) / abs_diff.size)
         decorator = 15 * "*"
         spaces = 5 * " "

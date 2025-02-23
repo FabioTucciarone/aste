@@ -15,7 +15,7 @@ int main(int argc, char *argv[])
       options["all"].as<bool>() ? LogRankFilter::All : LogRankFilter::OnlyPrimary);
 
   if (options.count("aste-config")) {
-    aste::runReplayMode(context, options["aste-config"].as<std::string>());
+    aste::runReplayMode(context, options);
   } else {
     aste::runMapperMode(context, options);
   }

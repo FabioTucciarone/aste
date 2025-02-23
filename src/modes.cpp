@@ -3,10 +3,10 @@
 #include "logger.hpp"
 #include "utilities.hpp"
 
-void aste::runReplayMode(const aste::ExecutionContext &context, const std::string &asteConfigName)
+void aste::runReplayMode(const aste::ExecutionContext &context, const OptionMap &options)
 {
   aste::asteConfig asteConfiguration;
-  asteConfiguration.load(asteConfigName);
+  asteConfiguration.load(options["aste-config"].as<std::string>());
   const std::string participantName = asteConfiguration.participantName;
   addLogIdentity(participantName, context.rank);
   ASTE_INFO << "ASTE Running in replay mode";
@@ -67,8 +67,7 @@ void aste::runReplayMode(const aste::ExecutionContext &context, const std::strin
 
   ASTE_DEBUG << "Looking for dt = " << asteConfiguration.startdt;
   for (const auto &mesh : asteConfiguration.asteInterfaces.front().meshes) {
-    auto meshfilename = std::filesystem::path(mesh.filename()).filename().string();
-    if (meshfilename.find(".dt" + std::to_string(asteConfiguration.startdt)) == std::string::npos)
+    if (mesh.filename().find("dt" + std::to_string(asteConfiguration.startdt)) == std::string::npos) // Error: test for "dt...""
       round++;
     else
       break;
@@ -131,6 +130,13 @@ void aste::runReplayMode(const aste::ExecutionContext &context, const std::strin
           preciceInterface.readData(asteInterface.meshName, meshdata.name, vertexIDs, dt, meshdata.dataVector);
           ASTE_DEBUG << "Data read: " << asteInterface.mesh.previewData(meshdata);
         }
+      }
+
+      if (asteConfiguration.writeOutput) {
+        auto meshname = asteInterface.meshes[round];
+        std::string name = meshname.filename();
+        name = name.substr(0, name.find_last_of("."));
+        meshname.save(asteInterface.mesh, name);
       }
     }
     round++;

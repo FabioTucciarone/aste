@@ -24,7 +24,7 @@ namespace aste {
  * @param context
  * @param asteConfigName ASTE configuration filename
  */
-void runReplayMode(const aste::ExecutionContext &context, const std::string &asteConfigName);
+void runReplayMode(const aste::ExecutionContext &context, const OptionMap &options);
 
 /**
  * @brief The function runs ASTE in mapper mode in which a given data is mapped from participant A to B.

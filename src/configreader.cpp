@@ -28,6 +28,16 @@ void asteConfig::load(const std::string &asteConfigFile)
   }
 
   try {
+    writeOutput = config["write-output"].get<bool>();
+  } catch (nlohmann::detail::parse_error &) {
+    ASTE_ERROR << "Error while parsing ASTE configuration file \"write-output\" is missing";
+    MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+  } catch (nlohmann::detail::type_error &) {
+    ASTE_ERROR << "Error while parsing ASTE configuration file \"write-output\" is missing";
+    MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+  }
+
+  try {
     startdt = config["startdt"].get<int>();
   } catch (nlohmann::detail::type_error &) {
     try {
